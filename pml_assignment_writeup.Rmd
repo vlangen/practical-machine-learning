@@ -1,0 +1,125 @@
+---
+title: "Practical Machine Learning assignment"
+author: "Vincent Langen"
+date: "June 21, 2015"
+output: 
+  html_document:
+    pandoc_args: [
+      "+RTS", "-K64m",
+      "-RTS"
+    ]
+---
+
+# Phase 1: Data cleaning
+
+Several things need to be done to clean this data set:
+
+* remove summary observations
+* remove variables that don't contain any information
+* remove time variables
+
+First we load the data:
+```{r}
+wl <- read.csv("pml-training.csv")
+```
+
+In principle, the data cleaning process should be designed only on the training part of the data, and then applied to both training and validation sets. In this case, it doesn't matter. Also, looking at the full training set helps to understand the data.
+
+## Remove summary observations
+
+Roughly every 25th observation is different from the rest. These can be distinguished by the variable `new_window`. All observations with `new_window` set to `yes` are excluded. Indeed, the paper accompanying the dataset confirms that every 2.5sec a summary observation is inserted. [Velloso, E.; Bulling, A.; Gellersen, H.; Ugulino, W.; Fuks, H. Qualitative Activity Recognition of Weight Lifting Exercises. Proceedings of 4th International Conference in Cooperation with SIGCHI (Augmented Human '13) . Stuttgart, Germany: ACM SIGCHI, 2013]
+
+The test dataset only contains observations with `new_window` set to `no`.
+
+This removes 406 observations from the data set.
+```{r}
+wl2 <- wl[wl$new_window=="no",]
+```
+
+## Remove empty variables
+
+The data set contains 160 variables, but out of these many contain all `NA` or all empty values. It doesn't make sense to include these in any models, so we drop these variables.
+
+```{r}
+emptyentries <- (wl2=="" | is.na(wl2))
+nEmptyPerVar <- colSums(emptyentries)
+sum( nEmptyPerVar > 0 & nEmptyPerVar < 19216 )
+```
+
+So all variables are either completely filled or completely empty.
+
+```{r}
+sum(nEmptyPerVar!=0)
+```
+
+There are 100 empty variables. I only keep the non-empty ones:
+```{r}
+wl3 <- wl2[,nEmptyPerVar==0]
+```
+
+Taking a peek at the test set, the remaining 60 columns are all in there and all values in them are filled.
+
+## Remove nonsense variables
+
+The variables `X`, `raw_timestamp_part_1`, `raw_timestamp_part_2`, `cvtd_timestamp`, `new_window` (which is now unary) and `num_window` are all 'circumstantial' and do not have any meaning relevant to which exercise was performed. So these will be dropped. Also, the variable `user_name` should probably not be included in the model: the model would be useless if there were a new user entering the experiment. But we keep that one for now. 
+```{r}
+wl4<-subset(wl3, select=-c(X, raw_timestamp_part_1, raw_timestamp_part_2, cvtd_timestamp, new_window, num_window))
+```
+
+# Phase 2: Modeling
+
+To do a simple version of cross validation, I'm going to split the cleaned training data set into two subsets. I relabel these as the training and test sets for the time being. But **beware** that I do this only with the dataset called training on the course website. I do not use the dataset called testing until the very end.
+
+I'm putting only 30% of the training set into the subsampled training set. This has a practical reason: my somewhat aged laptop doesn't have enough memory to deal with the full data set (or, say, 70% of it). This comes at the expense of some accuracy in the predictions, but it's better than nothing... :)
+
+```{r}
+library(caret)
+set.seed(78)
+inTrain <- createDataPartition(y=wl4$classe, p=0.3, list=FALSE)
+training <- wl4[inTrain,]
+testing <- wl4[-inTrain,]
+```
+
+Now I run a **random forest** model with default settings, and 5-fold cross validation within the already subsampled training set.
+
+```
+modFit <- train(classe~., data=training, method="rf", trControl=trainControl(method = "cv", number=5, verboseIter = TRUE), prox=TRUE, verbose=TRUE)
+```
+
+(I don't want to run that every time I knit this R markdown document, but I do want its result in this R session, so I load it here.)
+```{r}
+load("modfit-dump")
+```
+
+I then check the accuracy of the model:
+```
+print(modFit$finalModel)
+```
+which reports, among other things:
+```
+        OOB estimate of  error rate: 1.8%
+Confusion matrix:
+     A    B   C   D    E class.error
+A 1633    7   2   0    0 0.005481121
+B   20 1085   7   2    2 0.027777778
+C    0   15 983   7    1 0.022862823
+D    0    2  22 920    1 0.026455026
+E    0    5   4   7 1043 0.015108593
+```
+
+This shows that the model fit accuracy, based on the cross validation, is 98.2%. This looks very promising! Now I use the ridiculously big 70% testing set to get another out-of-sample estimate of the modeling accuracy.
+```{r}
+predictionOnTest <- predict(modFit, testing)
+confusionMatrix(predictionOnTest, testing$classe)
+```
+So apparently there is a >98% accuracy on all classes. This is very good, and I expect nearly all of the 20 samples in the testing set to be correct.
+
+# Phase 3: scoring the test data set
+
+The model should clearly be good enough to create predictions about the class A-E on the 20-sample test set provided in the assignment. These are my predictions... fingers crossed!
+```{r}
+weightlift.test <- read.csv("pml-testing.csv")
+predictionOnThe20 <- predict(modFit, weightlift.test)
+predictionOnThe20
+```
+
